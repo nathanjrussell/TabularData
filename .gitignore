@@ -61,3 +61,7 @@ target/
 *.log
 *.tmp
 *.temp  
+
+#temp testing output directory
+/tests/output/
+/output/

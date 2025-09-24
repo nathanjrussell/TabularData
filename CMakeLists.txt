@@ -16,10 +16,7 @@ set(TABULARDATA_NUM_THREADS "4" CACHE STRING
 
 option(TABULARDATA_BUILD_SHARED "Build Tabulardata as a shared library" ON)
 
-# ---- Library ----
-# Expect this layout:
-#   include/TabularData.h
-#   src/TabularData.cpp
+
 set(_hdrs
   ${CMAKE_CURRENT_SOURCE_DIR}/include/TabularData.h
 )
@@ -93,3 +90,33 @@ if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME)
   endif()
 endif()
 
+include(FetchContent)
+
+# Fetch GoogleTest
+FetchContent_Declare(
+  googletest
+  URL https://github.com/google/googletest/archive/refs/tags/v1.15.2.zip
+  DOWNLOAD_EXTRACT_TIMESTAMP true
+)
+set(gtest_force_shared_crt ON CACHE BOOL "" FORCE) # MSVC fix
+FetchContent_MakeAvailable(googletest)
+
+enable_testing()
+
+# --- Unit tests target ---
+add_executable(unit_tests
+    tests/unit_test.cpp
+)
+
+target_link_libraries(unit_tests
+    PRIVATE
+        tabulardata     # <-- your library target name
+        GTest::gtest_main
+)
+
+include(GoogleTest)
+gtest_discover_tests(unit_tests)
+# Pass the project root path to your code
+target_compile_definitions(unit_tests
+    PRIVATE PROJECT_ROOT_DIR="${CMAKE_SOURCE_DIR}"
+)

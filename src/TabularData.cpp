@@ -3,8 +3,23 @@
 #include <fstream>
 #include <iostream>
 #include <vector>
+#include <cstdint>
+#include <filesystem>
+#include <string>
 
-// JSON escaping for a single byte
+
+namespace fs = std::filesystem;
+
+
+void TabularData::setOutputDirectory(const std::string& dir) {
+    output_directory_ = dir.empty() ? std::string(".") : dir;
+    if (!fs::exists(output_directory_)) {
+        fs::create_directories(output_directory_);
+    }
+}
+
+// (Utility retained; currently unused by the .bin path but handy if you later
+// add JSON or text utilities.)
 void TabularData::writeJsonEscapedChar(std::ostream& os, unsigned char ch) {
     switch (ch) {
         case '\"': os << "\\\""; return;
@@ -24,182 +39,298 @@ void TabularData::writeJsonEscapedChar(std::ostream& os, unsigned char ch) {
     }
 }
 
-// Convenience overload (default options + optional output path)
-bool TabularData::parseHeaderFromCsv(const std::string& csv_path,
-                                     const std::string& out_json_path) {
-    CsvOptions opt; // use default member initializers
-    return parseHeaderFromCsv(csv_path, out_json_path, opt);
+// -----------------------------------------------------------------------------
+// Parse header → write (start,end) pairs to bin outut file
+// -----------------------------------------------------------------------------
+bool TabularData::parseHeaderFromCsv(const std::string& csv_path) {
+    CsvOptions opt; // defaults
+    return parseHeaderFromCsv(csv_path, opt);
 }
 
-// Core implementation
-bool TabularData::parseHeaderFromCsv(const std::string& csv_path,
-                                     const std::string& out_json_path,
-                                     const CsvOptions& opt) {
+bool TabularData::parseHeaderFromCsv(const std::string& csv_path, const CsvOptions& opt) {
     num_columns_ = 0;
+    csv_path_ = csv_path;
 
-    std::ifstream in(csv_path, std::ios::binary);
+    std::ifstream in(csv_path_, std::ios::binary);
     if (!in) {
-        std::cerr << "TabularData: cannot open input: " << csv_path << "\n";
-        return false;
-    }
-    std::ofstream out(out_json_path, std::ios::binary);
-    if (!out) {
-        std::cerr << "TabularData: cannot open output: " << out_json_path << "\n";
+        std::cerr << "TabularData: cannot open input: " << csv_path_ << "\n";
         return false;
     }
 
-    // ---- Parser state (streaming, chunk-friendly) ----
+    // check / create output directory and .bin path
+    const std::string out_dir = output_directory_.empty() ? std::string(".") : output_directory_;
+    if (!fs::exists(out_dir)) {
+        fs::create_directories(out_dir);
+    }
+    bin_path_ = defaultBinPath(out_dir);
+
+    std::ofstream binaryOutput(bin_path_, std::ios::binary | std::ios::trunc);
+    if (!binaryOutput) {
+        std::cerr << "TabularData: cannot open output: " << bin_path_ << "\n";
+        return false;
+    }
+
+    // ---- Parser state Flags (RFC 4180 standard compliance) ----
     const char DELIM = opt.delimiter;
     const char QUOTE = opt.quote;
 
-    bool in_quotes       = false;  // currently inside a quoted field?
-    bool pending_quote   = false;  // last byte was QUOTE while in_quotes; need next byte to decide escaped vs close
-    bool at_field_start  = true;   // before any bytes of the current field
-    bool first_field_out = true;   // for JSON commas
-    bool header_done     = false;  // newline (outside quotes) encountered
-    bool pending_cr      = false;  // saw a CR outside quotes; waiting to see if next is LF
+    bool in_quotes      = false;   // inside a quoted field?
+    bool pending_quote  = false;   // encountered quote while in_quotes; next byte decides "" vs close
+    bool at_field_start = true;    // no content yet for this field
+    bool header_done    = false;   // newline (outside quotes) encountered
+    bool pending_cr     = false;   // saw CR (outside quotes); waiting to see if next is LF
 
-    auto open_json_field_if_needed = [&]() {
-        if (at_field_start) {
-            if (first_field_out) { out << "\""; first_field_out = false; }
-            else                 { out << ",\""; }
+    // track a closed quoted field waiting for delimiter/newline
+    bool after_closing_quote = false;
+    std::uint64_t pending_end_excl = 0; // end-of-content (exclusive) for that closed field
+
+    // Offsets
+    std::uint64_t abs_pos = 0;          // absolute file position of the CURRENT byte
+    std::uint64_t field_start = 0;      // first byte of field content (excl. opening quote)
+    bool     field_has_started = false;
+
+    auto start_unquoted_if_needed = [&](std::uint64_t pos) {
+        if (at_field_start && !in_quotes && !field_has_started && !after_closing_quote) {
+            field_start = pos;     // first content byte
+            field_has_started = true;
             at_field_start = false;
         }
     };
-    auto close_json_field_if_open = [&]() {
-        if (!at_field_start) {
-            out << "\"";
-            at_field_start = true;
-        } else {
-            // field was empty; we still need to emit "" with correct comma handling
-            if (first_field_out) { out << "\"\""; first_field_out = false; }
-            else                 { out << ",\"\""; }
-        }
-        ++num_columns_;
+
+    auto start_quoted = [&](std::uint64_t pos_of_open_quote) {
+        // Content starts AFTER the opening quote
+        field_start = pos_of_open_quote + 1;
+        field_has_started = true;
+        at_field_start = false;
+        in_quotes = true;
+        after_closing_quote = false;
     };
 
-    // Begin JSON array
-    out << "[";
+    auto finalize_field = [&](std::uint64_t end_excl) {
+        // If empty (no content), start=end=end_excl
+        std::uint64_t start = field_has_started ? field_start : end_excl;
+        binaryOutput.write(reinterpret_cast<const char*>(&start), sizeof(std::uint64_t));
+        binaryOutput.write(reinterpret_cast<const char*>(&end_excl), sizeof(std::uint64_t));
+        ++num_columns_;
+        // Reset per-field state
+        at_field_start = true;
+        field_has_started = false;
+        after_closing_quote = false;
+    };
 
-    std::vector<char> buf(static_cast<size_t>(TABULARDATA_MAX_BUFFER_BYTES));
+    // Read in chunks
+    std::vector<char> buffer(static_cast<size_t>(TABULARDATA_MAX_BUFFER_BYTES));
 
-    while (!header_done && in) {
-        in.read(buf.data(), static_cast<std::streamsize>(buf.size()));
+    while (!header_done) {
+        in.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
         std::streamsize got = in.gcount();
-        if (got <= 0) break;
+        if (got <= 0) { break; }
 
         for (std::streamsize i = 0; i < got && !header_done; ++i) {
-            unsigned char c = static_cast<unsigned char>(buf[static_cast<size_t>(i)]);
+            unsigned char c = static_cast<unsigned char>(buffer[static_cast<size_t>(i)]);
 
-            // If a previous char was a quote while in_quotes, resolve it now
+            //abs_pos is the position of 'c' right now.
+            // increment abs_pos only when  actually consume 'c'.
+
+            // Resolve a pending quote inside a quoted field
             if (pending_quote) {
                 pending_quote = false;
                 if (c == static_cast<unsigned char>(QUOTE)) {
-                    // Escaped quote "" -> literal "
-                    open_json_field_if_needed();
-                    writeJsonEscapedChar(out, '\"');
-                    // Still inside quoted field
+                    // Escaped quote "" => literal '"' in content. Offsets unaffected.
+                    ++abs_pos;      //  consumed this second quote
                     continue;
                 } else {
-                    // The previous quote closed the quoted field.
+                    // The previous quote was a CLOSING quote.
+                    // Closing quote is at position (abs_pos - 1).
                     in_quotes = false;
-                    // Reprocess this current character with updated state.
-                    --i;
-                    continue;
+                    after_closing_quote = true;
+                    pending_end_excl = (abs_pos - 1); // exclude the closing quote
+
+                    // Reprocess this current byte 'c' in the new (unquoted) context.
+                    // Do NOT consume it here.
+                    --i;            // so the loop will see the same byte again
+                    continue;       // and abs_pos stays pointing to 'c'
                 }
             }
 
-            // Newline logic: only applies when not in quotes
+            // Newline handling (only outside quotes)
             if (!in_quotes) {
                 if (pending_cr) {
                     pending_cr = false;
                     if (c == '\n') {
-                        // CRLF terminates header
-                        close_json_field_if_open();
+                        // CRLF: header ends just before the CR (at abs_pos-1)
+                        std::uint64_t end_excl_for_final = after_closing_quote ? pending_end_excl : (abs_pos - 1);
+                        finalize_field(end_excl_for_final);
                         header_done = true;
+                        ++abs_pos;  // consume the LF
                         continue;
                     } else {
-                        // Lone CR terminates header; current byte belongs to next row
-                        close_json_field_if_open();
+                        // Lone CR: header ends at CR (abs_pos-1). Reprocess 'c'.
+                        std::uint64_t end_excl_for_final = after_closing_quote ? pending_end_excl : (abs_pos - 1);
+                        finalize_field(end_excl_for_final);
                         header_done = true;
-                        // Reprocess current byte as start of next row (ignored here)
+                        // Reprocess current byte; do not consume it yet.
                         --i;
                         continue;
                     }
                 }
-                if (c == '\r') { pending_cr = true; continue; }
-                if (c == '\n') {
-                    close_json_field_if_open();
-                    header_done = true;
+                if (c == '\r') {
+                    pending_cr = true;
+                    ++abs_pos;      // consumed CR
                     continue;
                 }
+                if (c == '\n') {
+                    // LF-only newline: header ends before this LF (at abs_pos)
+                    std::uint64_t end_excl_for_final = after_closing_quote ? pending_end_excl : abs_pos;
+                    finalize_field(end_excl_for_final);
+                    header_done = true;
+                    ++abs_pos;      // consume LF
+                    continue;
+                }
+
+                // Skip initial spaces/tabs at field start, and also after a closing quote
+                if ((at_field_start || after_closing_quote) && (c == ' ' || c == '\t')) {
+                    ++abs_pos;      // consume the whitespace
+                    continue;       // still waiting for delimiter/newline or real data
+                }
             } else {
-                // Inside quotes: any CR was data, not a pending CR
-                if (pending_cr) pending_cr = false;
+                // In quotes: CR is data, not a pending CR
+                if (pending_cr) { pending_cr = false; }
             }
 
             // Quote handling
             if (c == static_cast<unsigned char>(QUOTE)) {
-                if (at_field_start && !in_quotes) {
-                    // Start of a quoted field
-                    open_json_field_if_needed(); // opens and writes leading quote in JSON
-                    in_quotes = true;
+                if (at_field_start && !in_quotes && !after_closing_quote) {
+                    start_quoted(abs_pos);
+                    ++abs_pos;
                     continue;
                 }
                 if (in_quotes) {
-                    // Could be escaped-quote or closing-quote; decide on next byte (may be in next chunk)
+                    // Could be escaped-quote or closing-quote; decide on next byte (maybe next chunk)
                     pending_quote = true;
+                    ++abs_pos;
                     continue;
                 } else {
-                    // Quote inside unquoted field: treat as literal
-                    open_json_field_if_needed();
-                    writeJsonEscapedChar(out, '\"');
+                    // Quote inside unquoted field OR after_closing_quote:
+                    // treat as data only if  in an unquoted field (rare).
+                    if (!after_closing_quote) {
+                        start_unquoted_if_needed(abs_pos);
+                        ++abs_pos;
+                        continue;
+                    }
+                    // If after_closing_quote and  see a quote, that's malformed;
+                    // ignore as data to avoid crashing.
+                    ++abs_pos;
                     continue;
                 }
             }
 
-            // Delimiter ends field only when not in quotes
+            // Delimiter ends field only when outside quotes
             if (!in_quotes && c == static_cast<unsigned char>(DELIM)) {
-                close_json_field_if_open();
+                std::uint64_t end_excl_for_final = after_closing_quote ? pending_end_excl : abs_pos;
+                finalize_field(end_excl_for_final);
+                ++abs_pos;          // consume delimiter
                 continue;
             }
 
-            // Regular data byte
-            open_json_field_if_needed();
-            writeJsonEscapedChar(out, c);
+            // Regular data
+            if (!in_quotes) {
+                start_unquoted_if_needed(abs_pos);
+            }
+            ++abs_pos;              // consumed this data byte
         }
     }
 
-    // Finalize at EOF or when loop exits without marking header_done
+    // EOF / finalize if no newline encountered yet
     if (!header_done) {
         if (pending_quote) {
-            // No byte followed the quote: treat it as a closing quote
+            // File ended immediately after a quote in a quoted field: that quote closes the field.
+            // The quote was at position (abs_pos - 1). Exclude it, then finalize once.
             in_quotes = false;
-            pending_quote = false;
+            after_closing_quote = true;
+            pending_end_excl = abs_pos - 1;
         }
         if (pending_cr && !in_quotes) {
-            // CR at EOF counts as a newline
-            pending_cr = false;
-            close_json_field_if_open();
-            header_done = true;
+            // File ended right after CR outside quotes -> treat CR as newline
+            std::uint64_t end_excl_for_final = after_closing_quote ? pending_end_excl : (abs_pos - 1);
+            finalize_field(end_excl_for_final);
         } else {
-            // No terminating newline: close current field if any bytes or if we already emitted something
-            if (!first_field_out || !at_field_start) {
-                // If field has content, close it; else emit an empty field
-                if (!at_field_start) {
-                    out << "\"";
-                    at_field_start = true;
-                    ++num_columns_;
-                } else {
-                    out << "\"\"";
-                    ++num_columns_;
-                }
-            }
+            // EOF without newline: field runs to EOF, unless  already closed on a quote
+            std::uint64_t end_excl_for_final = after_closing_quote ? pending_end_excl : abs_pos;
+            finalize_field(end_excl_for_final);
         }
     }
 
-    // Close JSON array
-    out << "]";
-    out.flush();
+    binaryOutput.flush();
     return true;
 }
+
+
+// Returns 0-based index for 'name' or -1 if not found.
+// Compares RAW BYTES [start,end) from the CSV to 'name' (no unescaping).
+int TabularData::getColumnIndex(const std::string& name) const {
+    if (bin_path_.empty() || csv_path_.empty()) { return -1; }
+
+    std::ifstream bin(bin_path_, std::ios::binary);
+    if (!bin) { return -1; }
+
+    std::ifstream csv(csv_path_, std::ios::binary);
+    if (!csv) { return -1; }
+
+    std::uint64_t start = 0, end = 0;
+    int idx = 0;
+
+    while (bin.read(reinterpret_cast<char*>(&start), sizeof(std::uint64_t))) {
+        if (!bin.read(reinterpret_cast<char*>(&end), sizeof(std::uint64_t))) { break; }
+        if (end < start) { return -1; } // corrupt
+
+        const std::uint64_t len = end - start;
+        std::string buffer;
+        buffer.resize(static_cast<size_t>(len));
+
+        if (len > 0) {
+            csv.clear();
+            csv.seekg(static_cast<std::streamoff>(start), std::ios::beg);
+            if (!csv.read(&buffer[0], static_cast<std::streamsize>(len))) {
+                return -1;
+            }
+        }
+
+        if (buffer == name) { return idx; } 
+        ++idx;
+    }
+    return -1;
+}
+
+// Fetch raw header bytes for the given column index (quotes already excluded by offsets).
+std::string TabularData::getColumnHeader(int columnIndex) const {
+    if (columnIndex < 0) { return {}; }
+    if (bin_path_.empty() || csv_path_.empty()) { return {}; }
+
+    std::ifstream bin(bin_path_, std::ios::binary);
+    if (!bin) { return {}; }
+
+    // Each record is 16 bytes: [uint64 start][uint64 end]
+    const std::uint64_t pair_offset = static_cast<std::uint64_t>(columnIndex) * 16ULL;
+    bin.seekg(static_cast<std::streamoff>(pair_offset), std::ios::beg);
+    if (!bin) { return {}; }
+
+    std::uint64_t start = 0, end = 0;
+    if (!bin.read(reinterpret_cast<char*>(&start), sizeof(std::uint64_t))) { return {}; }
+    if (!bin.read(reinterpret_cast<char*>(&end), sizeof(std::uint64_t))) { return {}; }
+    if (end < start) { return {}; }
+
+    const std::uint64_t len = end - start;
+    std::string buffer;
+    buffer.resize(static_cast<size_t>(len));
+    if (len == 0) { return buffer; } // empty header
+
+    std::ifstream csv(csv_path_, std::ios::binary);
+    if (!csv) { return {}; }
+    csv.seekg(static_cast<std::streamoff>(start), std::ios::beg);
+    if (!csv.read(&buffer[0], static_cast<std::streamsize>(len))) { return {}; }
+
+    return buffer; // raw bytes (doubled quotes remain doubled if the field was quoted)
+}
+
+#include "create_offsets_file.cpp"

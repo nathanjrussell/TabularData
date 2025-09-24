@@ -1,0 +1,8 @@
+id,name,quote,notes,extra
+1,Alice,"Hello, world","Likes commas",""
+2,Bob,"He said ""Hello"" to everyone","Includes a quote","extra text"
+3,Charlie,"Line1
+Line2
+Line3","Has embedded newlines",
+4,,NoName,"Empty name field",""
+5,Daisy,"Comma, inside field","Trailing empty",
