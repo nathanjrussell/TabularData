@@ -39,19 +39,19 @@ void TabularData::parseHeaderRow() {
     bool pendingQuote = false;   // saw a quote while inQuotes; need next char to resolve
     bool headerDone = false;     // header row fully parsed
 
-    u64 pos = 0;                 // absolute byte offset from start of file
-    u64 fieldStart = 0;          // offset of first content byte (excludes opening quote)
-    u64 lastContent = 0;         // offset of last content byte seen
+    u32 pos = 0;                 // absolute byte offset from start of file
+    u32 fieldStart = 0;          // offset of first content byte (excludes opening quote)
+    u32 lastContent = 0;         // offset of last content byte seen
 
-    auto write_pair = [&](u64 start, u64 end) {
-        binFile.write(reinterpret_cast<const char*>(&start), sizeof(u64));
-        binFile.write(reinterpret_cast<const char*>(&end),   sizeof(u64));
+    auto write_pair = [&](u32 start, u16 length) {
+        binFile.write(reinterpret_cast<const char*>(&start), sizeof(u32));
+        binFile.write(reinterpret_cast<const char*>(&length),   sizeof(u16));
     };
 
     auto close_field = [&]() {
         // If empty, write end < start by using start-1 (consumer treats as empty)
-        const u64 end = (lastContent >= fieldStart) ? lastContent : (fieldStart - 1);
-        write_pair(fieldStart, end);
+        const u16 length = (lastContent >= fieldStart) ? lastContent : (fieldStart - 1);
+        write_pair(fieldStart, length);
     };
 
     while (!headerDone) {
@@ -136,17 +136,18 @@ void TabularData::parseHeaderRow() {
     }
 }
 
-std::pair<TabularData::u64, TabularData::u64>
+std::pair<TabularData::u32, TabularData::u16>
 TabularData::readPair(std::size_t colNum) const {
     std::ifstream binFile(_headersbinFilePath, std::ios::binary);
     if (!binFile) throw std::runtime_error("Missing headers index file. Run parseHeaderRow() first.");
 
-    const std::size_t stride = sizeof(u64) * 2;
+    const std::size_t stride = sizeof(u32) + sizeof(u16);
     binFile.seekg(static_cast<std::streamoff>(colNum * stride), std::ios::beg);
 
-    u64 start = 0, end = 0;
-    binFile.read(reinterpret_cast<char*>(&start), sizeof(u64));
-    binFile.read(reinterpret_cast<char*>(&end),   sizeof(u64));
+    u32 start = 0;
+    u16 end = 0;
+    binFile.read(reinterpret_cast<char*>(&start), sizeof(u32));
+    binFile.read(reinterpret_cast<char*>(&end),   sizeof(u16));
 
     if (!binFile) throw std::out_of_range("Column index out of range or corrupted index file");
     return {start, end};
@@ -185,7 +186,7 @@ std::string TabularData::getHeader(std::size_t colNum) const {
     std::ifstream in(_csvPath, std::ios::binary);
     if (!in) throw std::runtime_error("Failed to open CSV file: " + _csvPath);
 
-    const u64 len = end - start + 1;
+    const u32 len = end - start + 1;
     std::string buffer;
     buffer.resize(static_cast<size_t>(len));
 
@@ -197,13 +198,13 @@ std::string TabularData::getHeader(std::size_t colNum) const {
     return trim(unescapeCsvField(buffer));
 }
 
-const TabularData::u64 TabularData::getColumnCount() const {
+const TabularData::u32 TabularData::getColumnCount() const {
     //get file size
     std::ifstream binFile(_headersbinFilePath, std::ios::binary | std::ios::ate);
     if (!binFile) throw std::runtime_error("Missing headers index file.");
     const auto fileSize = binFile.tellg();
     if (fileSize < 0) throw std::runtime_error("Failed to get size of headers index file.");
-    return static_cast<TabularData::u64>(fileSize) / (sizeof(TabularData::u64) * 2);
+    return static_cast<TabularData::u32>(fileSize) / (sizeof(TabularData::u32) + sizeof(TabularData::u16));
 }
 
 } // namespace tabular

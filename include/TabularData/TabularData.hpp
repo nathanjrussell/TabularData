@@ -9,7 +9,8 @@ namespace tabular {
 class TabularData {
 public:
     int colCount = -1;
-    using u64 = std::uint64_t;
+    using u32 = std::uint32_t;
+    using u16 = std::uint16_t;
 
     TabularData(std::string csvPath, std::string outputDir);
 
@@ -19,11 +20,11 @@ public:
 
     const std::string& csvPath()   const { return _csvPath;   }
     const std::string& outputDir() const { return _outputDir; }
-    const u64 getColumnCount() const;
-    const u64 getCCcount() const { return colCount; }
+    const u32 getColumnCount() const;
+    const u32 getCCcount() const { return colCount; }
 
 private:
-    std::pair<u64,u64> readPair(std::size_t colNum) const;
+    std::pair<u32,u16> readPair(std::size_t colNum) const;
 
     // Helper: replace doubled quotes ("") → ("), used by getHeader()
     static std::string unescapeCsvField(std::string_view raw);
