@@ -13,7 +13,7 @@ namespace fs = std::filesystem;
 namespace tabular {
 
     #ifndef NUM_THREADS
-    #define NUM_THREADS 9
+    #define NUM_THREADS 8
     #endif
 
     #ifndef CHUNK_SIZE
@@ -221,13 +221,13 @@ const TabularData::u32 TabularData::getRowCount() const {
     return static_cast<std::uint64_t>(sz / sizeof(std::uint64_t));
 }
 
-#ifndef NUM_THREADS
-#define NUM_THREADS 16
-#endif
+// #ifndef NUM_THREADS
+// #define NUM_THREADS 16
+// #endif
 
-#ifndef CHUNK_SIZE
-#define CHUNK_SIZE 1048576u // 1 MiB if not set by CMake
-#endif
+// #ifndef CHUNK_SIZE
+// #define CHUNK_SIZE 1048576u // 1 MiB if not set by CMake
+// #endif
 
 namespace { // --------- file-local helpers (no header pollution)
 
