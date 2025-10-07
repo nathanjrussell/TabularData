@@ -1,5 +1,8 @@
 #include "TabularData/TabularData.hpp"
 #include <iostream>
+#include <cstdint>
+#include <fstream>
+#include <iostream>
 
 int main(int argc, char** argv) {
     if (argc < 3) {
@@ -9,6 +12,10 @@ int main(int argc, char** argv) {
 
     tabular::TabularData data(argv[1], argv[2]);
     data.parseHeaderRow();
+        std::cout << "Total columns: " << data.getColumnCount() << "\n";
+    std::cout << "Total columns (CC): " << data.getCCcount() << "\n";
+    data.findRowOffsets();
+    std::cout<<"Total Rows :" << data.getRowCount() << "\n";
 
     for (int i = 0; i < 5; ++i) {
         try {
@@ -17,7 +24,24 @@ int main(int argc, char** argv) {
             break;
         }
     }
-    std::cout << "Total columns: " << data.getColumnCount() << "\n";
-    std::cout << "Total columns (CC): " << data.getCCcount() << "\n";
+       std::ifstream csv("../phd_research/darkome/tests/data_sets/alldata_merged.csv", std::ios::binary);
+    std::ifstream offs("output/new/row_offsets.bin", std::ios::binary);
+    if (!csv || !offs) return 1;
+
+    std::uint64_t offset[10];
+    std::size_t n = 0;
+    while (n < 10 && offs.read(reinterpret_cast<char*>(&offset[n]), sizeof(std::uint64_t))) {
+        ++n;
+    }
+
+    char buf[10];
+    for (std::size_t i = 0; i < n; ++i) {
+        csv.clear();
+        csv.seekg(static_cast<std::streamoff>(offset[i]), std::ios::beg);
+        csv.read(buf, 10);
+        std::cout.write(buf, csv.gcount());
+        std::cout << '\n';
+    }
+
     return 0;
 }

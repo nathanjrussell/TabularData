@@ -4,12 +4,17 @@ project(TabularData LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+
+
+
 # Chunk size macro
 add_compile_definitions(CHUNK_SIZE=1048576)
 
 # Library
 add_library(TabularData src/TabularData.cpp)
 target_include_directories(TabularData PUBLIC include)
+target_compile_options(TabularData PRIVATE -O3)
+
 
 # Example app
 add_executable(main examples/main.cpp)
