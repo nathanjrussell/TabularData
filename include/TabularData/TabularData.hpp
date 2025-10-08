@@ -23,8 +23,10 @@ public:
     const std::string& outputDir() const { return _outputDir; }
     const u32 getColumnCount() const;
     const u32 getCCcount() const { return colCount; }
-    void findRowOffsets() const;
+    void findRowOffsets() ;
     const u32 getRowCount() const;
+    void mapIntTranspose();
+    void skipFaultyRows(bool skip);
 
 private:
     std::pair<u32,u16> readPair(std::size_t colNum) const;
@@ -35,6 +37,9 @@ private:
     std::string _csvPath;
     std::string _outputDir;
     std::string _headersbinFilePath;
+    uint64_t *_rowOffsets; //array of row offsets
+    u32 rowCount = 0; //number of rows
+    bool skipRows = true; //whether to skip rows with column count mismatch
 };
 
 } // namespace tabular

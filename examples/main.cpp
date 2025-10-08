@@ -11,6 +11,7 @@ int main(int argc, char** argv) {
     }
 
     tabular::TabularData data(argv[1], argv[2]);
+    data.skipFaultyRows(false);
     data.parseHeaderRow();
         std::cout << "Total columns: " << data.getColumnCount() << "\n";
     std::cout << "Total columns (CC): " << data.getCCcount() << "\n";
@@ -33,7 +34,10 @@ int main(int argc, char** argv) {
     while (n < 10 && offs.read(reinterpret_cast<char*>(&offset[n]), sizeof(std::uint64_t))) {
         ++n;
     }
-
+    //print offsets
+    for (int i = 0; i < n; i++) {
+        std::cout << "Offset[" << i << "] = " << offset[i] << "\n";
+    }
     char buf[10];
     for (std::size_t i = 0; i < n; ++i) {
         csv.clear();
@@ -42,6 +46,9 @@ int main(int argc, char** argv) {
         std::cout.write(buf, csv.gcount());
         std::cout << '\n';
     }
+    csv.close();
+    offs.close();
+    data.mapIntTranspose();
 
     return 0;
 }
