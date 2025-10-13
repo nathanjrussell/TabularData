@@ -50,5 +50,34 @@ int main(int argc, char** argv) {
     offs.close();
     data.mapIntTranspose();
 
+    // const std::string path = (argc > 1) ? argv[1] : "column_chunk_meta.bin";
+    const std::string path = "output/new/column_chunk_meta.bin";
+    // Print file size (bytes) and expected pair count
+    std::error_code ec;
+    auto sz = std::filesystem::file_size(path, ec);
+    if (ec) {
+        std::cerr << "Failed to stat file: " << path << " (" << ec.message() << ")\n";
+        return 1;
+    }
+    std::cout << "File: " << path << "\n"
+              << "Size (bytes): " << sz << "\n"
+              << "Pairs (u32,u32): " << (sz / 8) << (sz % 8 ? "  [WARNING: trailing bytes]" : "") << "\n";
+
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        std::cerr << "Cannot open " << path << "\n";
+        return 1;
+    }
+
+    std::uint32_t a, b;
+    std::uint32_t count = 0;
+    while (true) {
+        if (!in.read(reinterpret_cast<char*>(&a), sizeof(a))) break;
+        if (!in.read(reinterpret_cast<char*>(&b), sizeof(b))) break; // handles odd trailing bytes
+        count += a;
+        std::cout << a << " " << b << "\n";
+    }
+    std::cout << "Total count: " << count << "\n";
+
     return 0;
 }
