@@ -33,7 +33,7 @@ namespace tabular {
 #endif
 
 static constexpr const char* kHeaderIndexFileName = "header_string_lookup_offsets.bin";
-    static const std::vector<std::string> kOutputSubdirs = {"jsonData"};
+    static const std::vector<std::string> kOutputSubdirs = {"json_data"};
 
 // ------------------------- ctor & simple toggles -------------------------
 TabularData::TabularData(std::string csvPath, std::string outputDir)
@@ -68,9 +68,10 @@ void TabularData::skipFaultyRows(bool skip) { this->skipRows = skip; }
 }
 
 void TabularData::createHeaderJSON() {
-    std::ofstream jsonFile((fs::path(_outputDir) / "headers.json").string(), std::ios::trunc);
+    this->createStandAloneDataFiles = false; // force false to read from CSV directly initially
+    std::ofstream jsonFile((fs::path(_outputDir) / "json_data/headers.json").string(), std::ios::binary);
     //new offset index for quick access from JSON file
-    std::ofstream JSONIndexFile((fs::path(_outputDir) / "headers_json_index.bin").string(), std::ios::binary | std::ios::trunc);
+    std::ofstream JSONIndexFile((fs::path(_outputDir) / "json_data/headers_json_index.bin").string(), std::ios::binary | std::ios::trunc);
     if (!jsonFile) throw std::runtime_error("Failed to open headers.json for writing");
 
     const u32 colCount = getColumnCount();
@@ -102,8 +103,8 @@ void TabularData::createHeaderJSON() {
         //write header length to JSON index file
         JSONIndexFile.write(reinterpret_cast<const char*>(&headerLen), sizeof(u16));
 
-        jsonFile << headerStr;
-        bytesWritten += static_cast<u32>(headerStr.size());
+        jsonFile <<"\"" << headerStr << "\"";
+        bytesWritten += static_cast<u32>(headerStr.size()) + 2; // account for quotes
         if (col + 1 < colCount) {
             jsonFile << ",\n";
             bytesWritten += 2; // account for ",\n"
@@ -112,10 +113,8 @@ void TabularData::createHeaderJSON() {
     jsonFile << "\n]\n";
     jsonFile.close();
     JSONIndexFile.close();
+    this->createStandAloneDataFiles = true; //set true since JSON exists
 }
-
-
-
 
 void TabularData::parseHeaderRow() {
     this->colCount = 0;
@@ -179,13 +178,16 @@ void TabularData::parseHeaderRow() {
 
     in.close();
     binFile.close();
+    if (this->createStandAloneDataFiles) { createHeaderJSON(); }
 }
 
 // ---------------------------- header accessors ---------------------------
 
 std::pair<TabularData::u32, TabularData::u16>
 TabularData::readPair(std::size_t colNum) const {
-    std::ifstream binFile(_headersbinFilePath, std::ios::binary);
+    std::string offsetFile = this->createStandAloneDataFiles ?
+        (fs::path(_outputDir) / "json_data/headers_json_index.bin").string() : _headersbinFilePath;
+    std::ifstream binFile(offsetFile, std::ios::binary);
     if (!binFile) throw std::runtime_error("Missing headers index file. Run parseHeaderRow() first.");
 
     const std::size_t stride = sizeof(u32) + sizeof(u16);
@@ -198,6 +200,7 @@ TabularData::readPair(std::size_t colNum) const {
 
     if (!binFile) throw std::out_of_range("Column index out of range or corrupted index file");
     binFile.close();
+    std::cout<<"Read header pair for col "<<colNum<<": start="<<start<<", end="<<end <<std::endl;
     return {start, end};
 }
 
@@ -217,9 +220,11 @@ std::string TabularData::unescapeCsvField(std::string_view raw) {
 std::string TabularData::getHeader(std::size_t colNum) const {
     auto [start, end] = readPair(colNum);
     if (end < start) return std::string();
+    std::string dataFileSource = this->createStandAloneDataFiles ?
+    (fs::path(_outputDir) / "json_data/headers_json_index.bin").string() : _csvPath;
 
-    std::ifstream in(_csvPath, std::ios::binary);
-    if (!in) throw std::runtime_error("Failed to open CSV file: " + _csvPath);
+    std::ifstream in(dataFileSource, std::ios::binary);
+    if (!in) throw std::runtime_error("Failed to open CSV file: " + dataFileSource);
 
     const u32 len = end - start + 1;
     std::string buffer(len, '\0');

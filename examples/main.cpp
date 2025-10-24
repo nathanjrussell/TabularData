@@ -21,8 +21,8 @@ int main(int argc, char** argv) {
     for (int i = 0; i < 5; ++i) {
         try {
             std::cout << "Header[" << i << "]: " << data.getHeader(i) << "\n";
-        } catch (...) {
-            break;
+        } catch (std::exception& e) {
+            std::cerr << "Error retrieving header for column " << i << ": " << e.what() << "\n";
         }
     }
        std::ifstream csv("../phd_research/darkome/tests/data_sets/alldata_merged.csv", std::ios::binary);
