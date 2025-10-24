@@ -33,21 +33,89 @@ namespace tabular {
 #endif
 
 static constexpr const char* kHeaderIndexFileName = "header_string_lookup_offsets.bin";
+    static const std::vector<std::string> kOutputSubdirs = {"jsonData"};
 
 // ------------------------- ctor & simple toggles -------------------------
-
 TabularData::TabularData(std::string csvPath, std::string outputDir)
+    : TabularData(std::move(csvPath), std::move(outputDir), true) {}
+
+TabularData::TabularData(std::string csvPath, std::string outputDir, bool createStandAloneFiles = true)
     : _csvPath(std::move(csvPath)), _outputDir(std::move(outputDir)) {
     if (_csvPath.empty())  throw std::invalid_argument("csvPath is empty");
     if (_outputDir.empty()) throw std::invalid_argument("outputDir is empty");
+    this->createStandAloneDataFiles = createStandAloneFiles;
 
     fs::create_directories(_outputDir);
+    for (const auto &name : kOutputSubdirs) {
+        if (name.empty()) continue;
+        fs::create_directories(fs::path(_outputDir) / name);
+    }
     _headersbinFilePath = (fs::path(_outputDir) / kHeaderIndexFileName).string();
 }
 
 void TabularData::skipFaultyRows(bool skip) { this->skipRows = skip; }
 
 // ------------------------------ header parse -----------------------------
+
+    static inline std::string trim(const std::string& s) {
+    size_t start = 0;
+    while (start < s.size() && std::isspace(static_cast<unsigned char>(s[start]))) ++start;
+
+    size_t end = s.size();
+    while (end > start && std::isspace(static_cast<unsigned char>(s[end - 1]))) --end;
+
+    return s.substr(start, end - start);
+}
+
+void TabularData::createHeaderJSON() {
+    std::ofstream jsonFile((fs::path(_outputDir) / "headers.json").string(), std::ios::trunc);
+    //new offset index for quick access from JSON file
+    std::ofstream JSONIndexFile((fs::path(_outputDir) / "headers_json_index.bin").string(), std::ios::binary | std::ios::trunc);
+    if (!jsonFile) throw std::runtime_error("Failed to open headers.json for writing");
+
+    const u32 colCount = getColumnCount();
+    //track bytes written to json file to create new header offset index for quick access from JSON file
+    jsonFile << "[\n";
+    u32 bytesWritten = 2; // account for "[\n"
+    for (u32 col = 0; col < colCount; ++col) {
+        auto [start, end] = readPair(col);
+        if (end < start) continue;
+
+        std::ifstream in(_csvPath, std::ios::binary);
+        if (!in) throw std::runtime_error("Failed to open CSV file: " + _csvPath);
+
+        const u32 len = end - start + 1;
+        std::string buffer(len, '\0');
+
+        in.seekg(static_cast<std::streamoff>(start), std::ios::beg);
+        in.read(buffer.data(), static_cast<std::streamsize>(len));
+        if (!in) throw std::runtime_error("Failed to read header slice from CSV");
+
+        in.close();
+        std::string headerStr = unescapeCsvField(buffer);
+        //trim whitespace
+        headerStr = trim(headerStr);
+
+        //write current byte offset to JSON index file
+        JSONIndexFile.write(reinterpret_cast<const char*>(&bytesWritten), sizeof(u32));
+        u16 headerLen = static_cast<u16>(headerStr.size());
+        //write header length to JSON index file
+        JSONIndexFile.write(reinterpret_cast<const char*>(&headerLen), sizeof(u16));
+
+        jsonFile << headerStr;
+        bytesWritten += static_cast<u32>(headerStr.size());
+        if (col + 1 < colCount) {
+            jsonFile << ",\n";
+            bytesWritten += 2; // account for ",\n"
+        }
+    }
+    jsonFile << "\n]\n";
+    jsonFile.close();
+    JSONIndexFile.close();
+}
+
+
+
 
 void TabularData::parseHeaderRow() {
     this->colCount = 0;
@@ -144,15 +212,7 @@ std::string TabularData::unescapeCsvField(std::string_view raw) {
     return out;
 }
 
-static inline std::string trim(const std::string& s) {
-    size_t start = 0;
-    while (start < s.size() && std::isspace(static_cast<unsigned char>(s[start]))) ++start;
 
-    size_t end = s.size();
-    while (end > start && std::isspace(static_cast<unsigned char>(s[end - 1]))) --end;
-
-    return s.substr(start, end - start);
-}
 
 std::string TabularData::getHeader(std::size_t colNum) const {
     auto [start, end] = readPair(colNum);

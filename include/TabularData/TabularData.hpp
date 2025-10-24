@@ -10,11 +10,14 @@ class TabularData {
 public:
     int colCount = -1;
 
+    bool createStandAloneDataFiles = true;
     using u32 = std::uint32_t;
     using u16 = std::uint16_t;
 
     TabularData(std::string csvPath, std::string outputDir);
+    TabularData(std::string csvPath, std::string outputDir, bool createStandAloneFiles);
 
+    void createHeaderJSON();
     void parseHeaderRow();
 
     std::string getHeader(std::size_t colNum) const;
@@ -26,6 +29,7 @@ public:
     void findRowOffsets() ;
     const u32 getRowCount() const;
     void mapIntTranspose();
+
     void skipFaultyRows(bool skip);
 
 private:
